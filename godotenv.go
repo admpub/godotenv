@@ -187,19 +187,23 @@ func filenamesOrDefault(filenames []string) []string {
 	return filenames
 }
 
-func loadFile(filename string, overload bool) error {
-	envMap, err := readFile(filename)
-	if err != nil {
-		return err
-	}
-
+func CurrentEnvKeys() map[string]bool {
 	currentEnv := map[string]bool{}
 	rawEnv := os.Environ()
 	for _, rawEnvLine := range rawEnv {
 		key := strings.SplitN(rawEnvLine, "=", 2)[0]
 		currentEnv[key] = true
 	}
+	return currentEnv
+}
 
+func loadFile(filename string, overload bool) error {
+	envMap, err := readFile(filename)
+	if err != nil {
+		return err
+	}
+
+	currentEnv := CurrentEnvKeys()
 	for key, value := range envMap {
 		if !currentEnv[key] || overload {
 			os.Setenv(key, value)
