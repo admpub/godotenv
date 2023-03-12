@@ -12,9 +12,14 @@ import (
 var noopPresets = make(map[string]string)
 
 func parseAndCompare(t *testing.T, rawEnvLine string, expectedKey string, expectedValue string) {
-	key, value, _ := parseLine(rawEnvLine, noopPresets)
-	if key != expectedKey || value != expectedValue {
-		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%v' => '%v' instead", rawEnvLine, expectedKey, expectedValue, key, value)
+	result, err := Unmarshal(rawEnvLine)
+
+	if err != nil {
+		t.Errorf("Expected %q to parse as %q: %q, errored %q", rawEnvLine, expectedKey, expectedValue, err)
+		return
+	}
+	if result[expectedKey] != expectedValue {
+		t.Errorf("Expected '%v' to parse as '%v' => '%v', got %q instead", rawEnvLine, expectedKey, expectedValue, result)
 	}
 }
 
@@ -35,7 +40,7 @@ func loadEnvAndCompareValues(t *testing.T, loader func(files ...string) error, e
 		envValue := os.Getenv(k)
 		v := expectedValues[k]
 		if envValue != v {
-			t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
+			t.Errorf("Mismatch for key '%v': expected '%#v' got '%#v'", k, v, envValue)
 		}
 	}
 }
@@ -80,6 +85,7 @@ func TestReadPlainEnv(t *testing.T) {
 		"OPTION_E": "5",
 		"OPTION_F": "",
 		"OPTION_G": "",
+		"OPTION_H": "1 2",
 	}
 
 	envMap, err := Read(envFileName)
@@ -131,7 +137,7 @@ func TestLoadDoesNotOverride(t *testing.T) {
 	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, presets)
 }
 
-func TestOveroadDoesOverride(t *testing.T) {
+func TestOverloadDoesOverride(t *testing.T) {
 	envFileName := "fixtures/plain.env"
 
 	// ensure NO overload
@@ -153,6 +159,7 @@ func TestLoadPlainEnv(t *testing.T) {
 		"OPTION_C": "3",
 		"OPTION_D": "4",
 		"OPTION_E": "5",
+		"OPTION_H": "1 2",
 	}
 
 	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
@@ -189,6 +196,10 @@ func TestLoadQuotedEnv(t *testing.T) {
 		"OPTION_G": "",
 		"OPTION_H": "\n",
 		"OPTION_I": "echo 'asd'",
+		"OPTION_J": "line 1\nline 2",
+		"OPTION_K": "line one\nthis is \\'quoted\\'\none more line",
+		"OPTION_L": "line 1\nline 2",
+		"OPTION_M": "line one\nthis is \"quoted\"\none more line",
 	}
 
 	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
@@ -268,7 +279,34 @@ func TestExpanding(t *testing.T) {
 			}
 		})
 	}
+}
 
+func TestVariableStringValueSeparator(t *testing.T) {
+	input := "TEST_URLS=\"stratum+tcp://stratum.antpool.com:3333\nstratum+tcp://stratum.antpool.com:443\""
+	want := map[string]string{
+		"TEST_URLS": "stratum+tcp://stratum.antpool.com:3333\nstratum+tcp://stratum.antpool.com:443",
+	}
+	got, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Error(err)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf(
+			"unexpected value:\nwant:\n\t%#v\n\ngot:\n\t%#v", want, got)
+	}
+
+	for k, wantVal := range want {
+		gotVal, ok := got[k]
+		if !ok {
+			t.Fatalf("key %q doesn't present in result", k)
+		}
+		if wantVal != gotVal {
+			t.Fatalf(
+				"mismatch in %q value:\nwant:\n\t%s\n\ngot:\n\t%s", k,
+				wantVal, gotVal)
+		}
+	}
 }
 
 func TestActualEnvVarsAreLeftAlone(t *testing.T) {
@@ -325,17 +363,20 @@ func TestParsing(t *testing.T) {
 	// expect(env('FOO="bar\nbaz"')).to eql('FOO' => "bar\nbaz")
 	parseAndCompare(t, `FOO="bar\nbaz"`, "FOO", "bar\nbaz")
 
-	// it 'parses varibales with "." in the name' do
+	// it 'parses variables with "." in the name' do
 	// expect(env('FOO.BAR=foobar')).to eql('FOO.BAR' => 'foobar')
 	parseAndCompare(t, "FOO.BAR=foobar", "FOO.BAR", "foobar")
 
-	// it 'parses varibales with several "=" in the value' do
+	// it 'parses variables with several "=" in the value' do
 	// expect(env('FOO=foobar=')).to eql('FOO' => 'foobar=')
 	parseAndCompare(t, "FOO=foobar=", "FOO", "foobar=")
 
 	// it 'strips unquoted values' do
 	// expect(env('foo=bar ')).to eql('foo' => 'bar') # not 'bar '
 	parseAndCompare(t, "FOO=bar ", "FOO", "bar")
+
+	// unquoted internal whitespace is preserved
+	parseAndCompare(t, `KEY=value value`, "KEY", "value value")
 
 	// it 'ignores inline comments' do
 	// expect(env("foo=bar # this is foo")).to eql('foo' => 'bar')
@@ -359,10 +400,8 @@ func TestParsing(t *testing.T) {
 	parseAndCompare(t, `FOO="bar\\r\ b\az"`, "FOO", "bar\\r baz")
 
 	parseAndCompare(t, `="value"`, "", "value")
-	parseAndCompare(t, `KEY="`, "KEY", "\"")
-	parseAndCompare(t, `KEY="value`, "KEY", "\"value")
 
-	// leading whitespace should be ignored
+	// unquoted whitespace around keys should be ignored
 	parseAndCompare(t, " KEY =value", "KEY", "value")
 	parseAndCompare(t, "   KEY=value", "KEY", "value")
 	parseAndCompare(t, "\tKEY=value", "KEY", "value")
@@ -370,40 +409,45 @@ func TestParsing(t *testing.T) {
 	// it 'throws an error if line format is incorrect' do
 	// expect{env('lol$wut')}.to raise_error(Dotenv::FormatError)
 	badlyFormattedLine := "lol$wut"
-	_, _, err := parseLine(badlyFormattedLine, noopPresets)
+	_, err := Unmarshal(badlyFormattedLine)
 	if err == nil {
 		t.Errorf("Expected \"%v\" to return error, but it didn't", badlyFormattedLine)
 	}
 }
 
 func TestLinesToIgnore(t *testing.T) {
-	// it 'ignores empty lines' do
-	// expect(env("\n \t  \nfoo=bar\n \nfizz=buzz")).to eql('foo' => 'bar', 'fizz' => 'buzz')
-	if !isIgnoredLine("\n") {
-		t.Error("Line with nothing but line break wasn't ignored")
+	cases := map[string]struct {
+		input string
+		want  string
+	}{
+		"Line with nothing but line break": {
+			input: "\n",
+		},
+		"Line with nothing but windows-style line break": {
+			input: "\r\n",
+		},
+		"Line full of whitespace": {
+			input: "\t\t ",
+		},
+		"Comment": {
+			input: "# Comment",
+		},
+		"Indented comment": {
+			input: "\t # comment",
+		},
+		"non-ignored value": {
+			input: `export OPTION_B='\n'`,
+			want:  `export OPTION_B='\n'`,
+		},
 	}
 
-	if !isIgnoredLine("\r\n") {
-		t.Error("Line with nothing but windows-style line break wasn't ignored")
-	}
-
-	if !isIgnoredLine("\t\t ") {
-		t.Error("Line full of whitespace wasn't ignored")
-	}
-
-	// it 'ignores comment lines' do
-	// expect(env("\n\n\n # HERE GOES FOO \nfoo=bar")).to eql('foo' => 'bar')
-	if !isIgnoredLine("# comment") {
-		t.Error("Comment wasn't ignored")
-	}
-
-	if !isIgnoredLine("\t#comment") {
-		t.Error("Indented comment wasn't ignored")
-	}
-
-	// make sure we're not getting false positives
-	if isIgnoredLine(`export OPTION_B='\n'`) {
-		t.Error("ignoring a perfectly valid line to parse")
+	for n, c := range cases {
+		t.Run(n, func(t *testing.T) {
+			got := string(getStatementStart([]byte(c.input)))
+			if got != c.want {
+				t.Errorf("Expected:\t %q\nGot:\t %q", c.want, got)
+			}
+		})
 	}
 }
 
@@ -422,6 +466,17 @@ func TestErrorParsing(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error, got %v", envMap)
 	}
+}
+
+func TestComments(t *testing.T) {
+	envFileName := "fixtures/comments.env"
+	expectedValues := map[string]string{
+		"foo": "bar",
+		"bar": "foo#baz",
+		"baz": "foo",
+	}
+
+	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
 }
 
 func TestWrite(t *testing.T) {
@@ -470,5 +525,51 @@ func TestRoundtrip(t *testing.T) {
 			t.Errorf("Expected '%s' to roundtrip as '%v', got '%v' instead", fixtureFilename, env, roundtripped)
 		}
 
+	}
+}
+
+func TestTrailingNewlines(t *testing.T) {
+	cases := map[string]struct {
+		input string
+		key   string
+		value string
+	}{
+		"Simple value without trailing newline": {
+			input: "KEY=value",
+			key:   "KEY",
+			value: "value",
+		},
+		"Value with internal whitespace without trailing newline": {
+			input: "KEY=value value",
+			key:   "KEY",
+			value: "value value",
+		},
+		"Value with internal whitespace with trailing newline": {
+			input: "KEY=value value\n",
+			key:   "KEY",
+			value: "value value",
+		},
+		"YAML style - value with internal whitespace without trailing newline": {
+			input: "KEY: value value",
+			key:   "KEY",
+			value: "value value",
+		},
+		"YAML style - value with internal whitespace with trailing newline": {
+			input: "KEY: value value\n",
+			key:   "KEY",
+			value: "value value",
+		},
+	}
+
+	for n, c := range cases {
+		t.Run(n, func(t *testing.T) {
+			result, err := Unmarshal(c.input)
+			if err != nil {
+				t.Errorf("Input: %q Unexpected error:\t%q", c.input, err)
+			}
+			if result[c.key] != c.value {
+				t.Errorf("Input %q Expected:\t %q/%q\nGot:\t %q", c.input, c.key, c.value, result)
+			}
+		})
 	}
 }
